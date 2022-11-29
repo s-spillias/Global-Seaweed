@@ -1,0 +1,1702 @@
+---
+title: "Generate Final Figures and Remaining Tables "
+output: pdf_document
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library(gdxrrw)
+library(terra)
+library(sf)
+library(here)
+library(tidyverse)
+library(ggpubr)
+library(beyonce)
+library(rgeos)
+library(gridExtra)
+library(patchwork)
+library(tmap)
+library("rnaturalearth")
+library("rnaturalearthdata")
+
+tmap_options(max.raster = c(plot = 1e7, view = 1e6))
+
+wrld <- ne_countries(scale = "medium", returnclass = "sf")
+
+occurrence_all <- read.csv(here("Inputs/occurrence_use.csv")) 
+
+big <- c("Food", "Feed", "Fuel" ,"All",  "Aspa")
+
+sp_avail <- occurrence_all %>% 
+  filter(species!= "Lessonia nigrescens") %>% 
+  pull(species) %>% unique %>% 
+  intersect(readRDS(here("Inputs/util_data.RDS")) %>% 
+  pull(Taxa) %>% 
+  unique())
+
+#source("Inputs/4a_functions.R")
+igdx("C:/GAMS/36")
+source(here("6a_var_id.R"))
+
+reg <- readRDS(here("Inputs/eez_ordered.RDS")) %>% pull(Region) %>% c("WORLD") %>% rev
+
+
+
+figure_folder <- here("Manuscript_Latex/YSSP_Report_Latex/figures") %>% str_remove("LUC_Project_min/")
+
+source(here("1_regions.R"))
+dm_assumption = "" #"_20" #"_10" "_20"
+native = TRUE ### Needs to run before 5b
+
+pub_region <- function(x){
+  x %>% 
+    mutate(Region = str_remove_all(Region, "Reg"),
+           Region = str_replace(Region, "_"," "),
+           Region = str_replace(Region, "Af"," Africa"),
+           Region = str_replace(Region, "Africar","Africa"),
+           Region = str_replace(Region, " Africaica","Africa"),
+           Region = gsub("([[:lower:]])([[:upper:]][[:lower:]])", "\\1 \\2", Region),
+           Region = case_when(
+             Region == "RSAM" ~ "Rest of South America",
+             Region == "RCAM" ~ "Central America",
+             Region == "RSAS" ~ "Rest of South Asia",
+             Region == "ROWE" ~ "Rest of Western Europe",
+             Region == "RCEU" ~ "Rest of Central Europe",
+             Region == "RSEA PAC" ~ "Rest of SE Asia-P",
+             Region == "RSEA OPA" ~ "Rest of SE Asia-O",
+             TRUE ~ Region
+           ),
+         #  Region = factor(Region, levels = region_order %>% rev)
+           #    Region = str_replace(Region, "Afr"," Africa"),
+    ) 
+    
+}
+
+
+pub_scen <- function(x){
+  x %>% 
+    mutate(SW_Scen = case_when(SW_Scen == "SW_FOOD_01" ~ "Food-01",
+                               SW_Scen ==  "SW_FOOD_10"~ "Food",
+                               SW_Scen ==  "SW_ASPA_005_CH4"~ "Aspa-0.5R-CH4",
+                               SW_Scen ==  "SW_ASPA_005_FCE" ~ "Aspa-0.5R-FCE",
+                               SW_Scen ==  "SW_ASPA_005_COMB" ~ "Aspa",
+                               SW_Scen ==  "SW_FEED_01" ~ "Feed-01",
+                               SW_Scen ==  "SW_FEED_10" ~ "Feed",
+                               SW_Scen ==  "SW_FEED_10_01" ~ "Feed-10-01",
+                               SW_Scen ==  "SW_FEED_10_05" ~ "Feed-10-05",
+                               SW_Scen ==  "SW_FUEL_10"  ~ "Fuel-10",
+                               SW_Scen ==  "SW_FUEL_50" ~ "Fuel",
+                               SW_Scen ==  "SW_ALL_LOW" ~ "All-Low",
+                               SW_Scen ==  "SW_ALL_HIGH"  ~ "All",
+                               SW_Scen ==  "SW_ALL_LOW_ASPA"  ~ "All-Low-Aspa",
+                               SW_Scen ==  "SW_ALL_HIGH_ASPA" ~ "All-High-Aspa",
+                               TRUE ~ SW_Scen  %>% as.character
+    ) %>% factor(levels = c("Food","Feed","Fuel","All","Aspa") %>% rev))
+}
+
+```
+
+
+```{r more setup}
+source(here("5b_optim_clean.R"))
+
+globiom_ag <- if(exists("globiom_ag")) {globiom_ag} else {readRDS(here("Inputs/globiom_ag.RDS"))}
+globiom <- if(exists("globiom")) {globiom} else {readRDS(here("Inputs/globiom.RDS"))} 
+
+   country_map <- st_read(here("Inputs/ne_110m_admin_0_countries.shp"))%>% 
+     mutate(ISO_A3_EH = ifelse(ISO_A3_EH == -99,SOV_A3,ISO_A3_EH)) %>% 
+  full_join(readRDS(here("Inputs/regions.RDS")), by = c("ISO_A3_EH" = "ISO3") ) %>% 
+     filter(!is.na(SOVEREIGNT))
+     # vect()# %>% 
+    # shift(dx = 180)
+#sw_supply <- readRDS(here("Inputs/sw_supply.RDS")) ##need native file
+output_legend <- theme(legend.position = c(0.85, 0.8),
+               legend.key.size = unit(0.5/2, 'cm'), #change legend key size
+              legend.key.height = unit(1/2, 'cm'), #change legend key height
+               legend.key.width = unit(1/2, 'cm'), #change legend key width
+               legend.title = element_text(size=8), #change legend title font size
+               legend.text = element_text(size=7),
+              legend.justification = "left",
+              plot.title = element_text(size = 12)) 
+
+sw_supply <- readRDS(here(paste0("Inputs/sw_supply.RDS")))
+
+
+scen_col = c(beyonce_palette(40)[c(-1,-7,-8)],
+             rev(beyonce_palette(45)[c(2:5)]),
+             beyonce_palette(36)[3:4],
+             beyonce_palette(48)[c(2,3)],
+             beyonce_palette(60)[c(8,9)]) %>% 
+  setNames(((globiom %>% pub_scen)$SW_Scen %>% unique)[-1])
+
+#scen_pal <- scale_fill_manual(name = "Scenario",values = scen_col, guide = guide_legend(reverse = TRUE)  )
+scen_pal <- c(beyonce_palette(64)[c(11,9,7,6,5)]#,beyonce_palette(31)[5],beyonce_palette(29)[5]
+              ) %>% rev
+
+sw_col = c(rev(beyonce_palette(40)),beyonce_palette(13),beyonce_palette(10),beyonce_palette(29),beyonce_palette(14),beyonce_palette(22)[-c(1:4)]) %>% sample %>% 
+  setNames(names(sw_supply) %>% intersect(readRDS(here("Inputs/util_data.RDS")) %>% pull(Taxa)))
+
+food <- names(scen_col)[c(1,2)]
+all_feed <- names(scen_col)[c(5,6,7,8,9)]
+fuel <- names(scen_col)[c(10,11)]
+
+aspa <- names(scen_col)[c(3,4,5)]
+
+basics_emis <- names(scen_col)[c(1,2,3,4,5,6,7,10,11)]
+feed <- names(scen_col)[c(6,7,8,9)]
+
+all <- names(scen_col)[c(1,2,6,7,8,9,3,4,5,10,11,12,13,14,15,16)]
+#sets <- lst(basics,basics_emis,feed,big,all,food,all_feed,fuel,aspa)
+
+sw_pal <- scale_fill_manual(name = "Taxa",values = sw_col, guide = guide_legend(reverse = TRUE))
+
+
+
+watr_col =  beyonce_palette(82)[c(1:4)] %>% ## 82 or 84
+  setNames(globiom_ag %>% filter(VAR_ID == "WATR") %>%   filter(!(ITEM_AG %in% c("ALL","CGR","RIC","WHT","CRP","AGR","SRP"))) %>%
+             mutate(ITEM_AG = case_when(ITEM_AG == "CER" ~ "Cereals",
+                                        ITEM_AG == "OSD" ~ "Oilseeds",
+                                        ITEM_AG == "SGC" ~ "Sugarcane",
+                                        ITEM_AG == "OCR" ~ "Other Crops",
+                                        TRUE ~ ITEM_AG
+                                        )) %>%
+ pull(ITEM_AG) %>% unique )
+
+watr_pal = scale_fill_manual(name = "Crop Type",
+                             values = watr_col, 
+                             breaks = c("Cereals", "Sugarcane","Other Crops","Oilseeds"),
+                             guide = guide_legend(reverse = FALSE)  )
+
+native_file = "native"
+
+files_ras <- list.files(here(paste0("Outputs/Regional_Production",dm_assumption,"/",native_file)),pattern = ".tif", full.names = TRUE) %>% str_remove(".aux.xml") %>% unique() %>% 
+  c(
+    list.files(here(paste0("Outputs/Regional_Production",dm_assumption,"/",native_file,"/combos")),pattern = ".tif", full.names = TRUE) %>% str_remove(".aux.xml") %>% unique()
+  )
+
+region_order <- eez_clean %>% 
+  mutate(Regional_Agg = factor(Regional_Agg, levels = (eez_clean %>% pull(Regional_Agg) %>% unique)[c(2,4,5,11,10,12,9,3,6,7,8,1,13)])) %>% 
+  arrange(Regional_Agg,desc(Region)) %>% dplyr::select(Regional_Agg, Region) %>% 
+  mutate(Region = str_remove_all(Region, "Reg"),
+         Region = str_replace(Region, "_"," "),
+         Region = str_replace(Region, "Af"," Africa"),
+         Region = str_replace(Region, "Africar","Africa"),
+         Region = gsub("([[:lower:]])([[:upper:]][[:lower:]])", "\\1 \\2", Region),
+         Region = case_when(
+           Region == "RSAM" ~ "Rest of South America",
+           Region == "RCAM" ~ "Central America",
+           Region == "RSAS" ~ "Rest of South Asia",
+           Region == "ROWE" ~ "Rest of Western Europe",
+           Region == "RCEU" ~ "Rest of Central Europe",
+           Region == "RSEA PAC" ~ "Rest of SE Asia - P",
+           Region == "RSEA OPA" ~ "Rest of SE Asia - O",
+           TRUE ~ Region
+         )) %>% pull(Region) %>% unique
+
+
+
+
+
+
+```
+
+```{r Supplementary Tables and Data}
+### Run Before Global Map
+source(here("4e_SDM_report.R"))
+source(here("4g_diversity.R"))
+```
+
+
+```{r Global Map FIGURE 2}
+
+### Plot Global Maps  
+
+sum_layers <- rast(here("Outputs/sum_layers.tif"))
+names(sum_layers) <- c("Feasible", "EEZ", "Native", "Suitable")
+
+sel_com <- (sum_layers[[c(1,4)]] > 0) %>% 
+  app("sum", na.rm = TRUE)
+to_fill_name <- "sum"
+ind = "A"
+pal <- c(beyonce_palette(54)[c(5)],beyonce_palette(54)[c(1)])
+prio = FALSE
+source(here("4f_plot_global.R"))
+
+### Plot Prioritization Maps
+ass_do <- c("min", 
+            "mean",
+            "max"
+            )
+
+sw_do <- c("SW_FOOD_10","SW_FEED_10","SW_FUEL_50","SW_ASPA_005_COMB"
+           )
+to_do <- expand.grid(ass_do,sw_do) %>% filter(Var1 == "mean")
+
+prio = TRUE
+
+for(i in 1:nrow(to_do)){
+#supp = TRUE
+index = to_do[i,]
+ass = index[1] %>% pull %>% as.character
+sw = index[2] %>% pull %>% as.character
+
+if(sw == "SW_ASPA_005_COMB" ){
+  ras_prio <- files_ras[files_ras %>% str_detect("WORLD")][4] %>% rast() %>% subset(c(2,1,3))
+} else {
+  if(sw == "SW_FOOD_10"){
+  ras_prio <- files_ras[files_ras %>% str_detect("WORLD")][-4] %>% 
+  lapply(function(x) rast(x)[[c(1)]]) %>% 
+  rast() %>% subset(c(2,1,3))
+  } else {
+     if(sw == "SW_FEED_10"){
+  ras_prio <- files_ras[files_ras %>% str_detect("WORLD")][-4] %>% 
+  lapply(function(x) rast(x)[[c(9)]]) %>% 
+  rast() %>% subset(c(2,1,3))
+  } else {
+      ras_prio <- files_ras[files_ras %>% str_detect("WORLD")][-4] %>% 
+  lapply(function(x) rast(x)[[c(17)]]) %>% 
+  rast() %>% subset(c(2,1,3))
+  }
+  }
+}
+
+ind <- paste0(sw,"_",ass)
+message(ind)
+sel_com <- ras_prio %>% app(function(x) as.numeric(x)*0)# %>% setNames("sum")
+to_fill_name <- "Assumption"#%>% #[[ind]]
+# app(function(x) as.numeric(x)*0) %>% setNames("sum")
+
+
+pal <- c(beyonce_palette(64)[c(7,4,11)]
+         )
+
+source(here("4f_plot_global.R"))
+}
+```
+
+```{r Figure 2a. Scenario Demand }
+
+sw_supply <- readRDS(here(paste0("Inputs/sw_supply.RDS")))
+
+ sw_supply %>% 
+  filter(Region == "WORLD") %>% 
+  group_by(SW_Scen, `Assumption Level`) %>% 
+  summarise(Mha = mean(Hectares)/1e6) %>% 
+  pivot_wider(names_from = `Assumption Level`, values_from = Mha) %>% 
+  ungroup() %>% pub_scen %>% 
+     mutate(SW_Scen = factor(SW_Scen,levels =  big %>% rev)) %>% 
+  ggplot() + 
+  geom_col(aes(x = SW_Scen, y = mean, fill = SW_Scen)) +
+  geom_errorbar(aes(x= SW_Scen, ymin = min, ymax = max), width = 0.2) +
+  coord_flip() +
+  scale_fill_manual(values = scen_pal,
+                    name = "Scenario",
+                    guide = guide_legend(reverse = TRUE)) +
+
+  #scale_y_log10(expand = c(0,0)) +
+    scale_y_continuous(expand = c(0.01,0)) +
+  xlab(NULL) +
+   ggtitle("A") +
+  ylab("Sea-Use Required (Mha)") +
+  theme_classic() +
+  theme(axis.text.y = element_blank(),
+        legend.position = c(0.86,0.8)) 
+
+ggsave(file.path(figure_folder,"scen_plot.pdf"), width = 5, height = 5, dpi = 300)
+ggsave(file.path(figure_folder,"scen_plot.eps"), width = 5, height = 5, dpi = 300)
+ 
+ 
+  
+```
+
+```{r Figure 2b. Demand_Met}
+
+source(here("1_regions.R"))
+
+type_names <- c("Sufficient Supply",
+                          "a1","a2",
+                          "Insufficient Supply",
+                          "No Market")
+demand_cols <- beyonce_palette(33, type = "continuous", n = 12)
+type_col <- c(demand_cols[c(3,5)],
+                                 demand_cols[c(10,12)],
+                                  "grey25") %>% setNames(type_names)
+
+(demand_met <- sw_supply %>% 
+  dplyr::select(SW_Scen, Region,Demand, Demand_Met, `Assumption Level`,Hectares) %>% 
+   group_by(Region, SW_Scen,Demand, `Assumption Level`) %>%
+  summarise(Demand_Met = any(Demand_Met)) %>% 
+    mutate( Demand_Met = ifelse(Demand ==0 ,"No Demand",Demand_Met %>% str_to_title)) %>%
+   mutate(Demand_Met = factor(Demand_Met, levels = c("True","False","No Demand"))) %>%
+  pub_scen() %>%
+    pub_region     %>%
+   mutate(
+         `Assumption Level` = factor(`Assumption Level` %>% str_to_title, levels = c("Min","Mean","Max"))) %>%
+  filter(Region != 'WORLD') %>% 
+  pivot_wider(names_from = `Assumption Level`, values_from = Demand_Met ) %>% 
+  group_by(Region, SW_Scen) %>% 
+  summarise(type = case_when(Min == "True" ~ 1,
+                          Mean == "True" & Min == "False" ~ 2,
+                          Max == "True" & Mean == "False" ~ 3,
+                          Max == "False" ~ 4,
+                          Max == "No Demand" ~5
+                          )) %>% 
+  group_by(SW_Scen,type) %>% 
+ #   mutate(type = as.character(6-type)) %>% 
+  summarise(n=n()) %>% 
+    mutate(type = type_names[as.numeric(type)] %>% factor(levels = type_names %>% rev)) %>% 
+  ggplot() +
+  geom_col(aes(x = SW_Scen,y = n, fill =type#,color = to_color
+                ), width = 0.9,height = 0.9, size = .5) +
+    coord_flip() +
+  theme_classic() +
+  theme(#axis.text.x = element_text(angle = 45,
+                #                   hjust = 1.0),
+        axis.text.y = element_text(size = 8),
+     legend.position = "right",#c(0.9, 0.8),
+              legend.key.size = unit(0.5, 'cm'), #change legend key size
+
+              legend.text = element_text(size=7)
+     ) +
+  ylab("Number of Regions") + 
+    xlab(NULL) +
+ scale_fill_manual(values =  type_col ,#beyonce_palette(64)[c(6)],
+                      #midpoint = 0,
+                    #  na.value = "white",
+                   # guide = guide_colorbar(reverse =FALSE),
+                    name = str_wrap("Demand Met", width = 10),
+                  breaks = type_names[c(1,4,5)],
+               #    breaks = (1:5) %>% as.character %>% rev,
+                   # labels = c("Sufficient Supply",
+                   #            "","",
+                   #            "Insufficient Supply",
+                   #            "No Market")
+                  ) +
+  #scale_color_manual(values = c("white","red") ) +
+  guides( colour = FALSE) 
+)
+
+(need_fig <- sw_supply %>% filter(Region == "WORLD") %>% group_by(SW_Scen, `Assumption Level`) %>% summarise(Mha = mean(Hectares)/1e6) %>% pivot_wider(names_from = `Assumption Level`, values_from = Mha) %>% ungroup() %>% pub_scen %>% 
+  #mutate(SW_Scen = factor(SW_Scen, levels = sw_do)) %>% 
+  filter(!is.na(SW_Scen)) %>% 
+  ggplot() +
+    geom_col(aes(x = SW_Scen, y = mean, fill = SW_Scen) ) +
+  geom_errorbar(aes(x = SW_Scen, ymin = min, ymax = max), col = "grey25", size = .6, width = 0.2) +
+#  geom_point(aes(x = SW_Scen, y = mean, col = SW_Scen), size = 3) +
+  theme_classic() +
+  scale_fill_manual(values = scen_pal,
+                     guide = guide_legend(reverse = TRUE),
+                     name = "Scenario") +
+    theme(legend.position = c(0.85,0.8),
+         # axis.text.y = element_blank()
+          ) +
+  coord_flip() +
+  ylab("Mha") +
+  xlab(NULL) +
+  ggtitle("A"))# +
+  #scale_y_log10()
+
+
+   ggsave(filename =  paste0(figure_folder, "/SUB_DEMAND.png"), device = "png", width = 4.5, height = 4.5)
+     ggsave(filename =  paste0(figure_folder, "/SUB_DEMAND.eps"), device = "eps", width = 4.5, height = 4.5)
+     
+        ggsave(filename =  paste0(figure_folder, "/sea_use.png"), device = "png", width = 4.5, height = 4.5)
+     ggsave(filename =  paste0(figure_folder, "/sea_use.eps"), device = "eps", width = 4.5, height = 4.5)
+     
+     #    ggsave(filename =  paste0(figure_folder, "/sea_use.png"), device = "png", width = 11, height = 5.5)
+     # ggsave(filename =  paste0(figure_folder, "/sea_use.eps"), device = "eps", width = 11, height = 5.5)
+ 
+source(here("Inputs/sub_demand_supp.R"))         
+     
+```
+
+```{r Figure 3. Global Benefits Bar Chart }
+
+i=1
+basics <- names(scen_col)[c(5,13,2,7,11 #ALL-HIGH
+                            )]
+    sw_do <- big#} else {sw_do <- basics[-2] }
+
+    
+land_dat <- globiom %>% ####### use 'globiom' or 'land_comp'
+    filter(YEAR == 2050) %>% 
+    filter(VAR_ID == "LAND") %>% 
+    filter(REGION_AG != "World") %>% 
+    #filter(VAR_UNIT == j) %>% 
+    group_by(ITEM_AG,SW_Scen) %>% 
+      summarise(OUTPUT_AG = sum(OUTPUT_AG, na.rm = TRUE)) %>% 
+      pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+      mutate(across(.cols = starts_with("SW_"), .fns = list(
+        delta_Baseline = function(x) {(x-SW_Base)}),
+        .names = "{.fn}.{.col}" )) %>%
+      dplyr::select(!starts_with("SW_")) %>%
+      pivot_longer(cols = starts_with("delta_Baseline"), values_to = "delta_Baseline", names_to = "SW_Scen") %>%
+      mutate(SW_Scen = str_remove(SW_Scen, "delta_Baseline.") ) %>%
+      rename("OUTPUT_AG"="delta_Baseline") %>%
+      filter(SW_Scen != "SW_Base") %>% 
+#  filter(!(ITEM_AG %in% c("OTHLAND","OTHAGRI","PLANTATION") )) %>% 
+  pub_scen() %>% 
+     filter((SW_Scen %in% sw_do)) %>% 
+   # mutate(SW_Scen = factor(SW_Scen, levels = sw_do#names(scen_col)
+                             # )) %>% 
+filter(ITEM_AG != "FOREST") %>% 
+  mutate(ITEM_AG = factor(recode(ITEM_AG, 
+                          "AFRLND"="Forest",
+                          "CRPLND" = "Cropland",
+                          #"FOREST" = "Forest",
+                          "GRSLND" = "Grassland",
+                          "MNGFOR" = "Forest",
+                          "PLTFOR" = "Forest",
+                          "PRIFOR" = "Forest",
+                          "NATLND" = "Other Vegetation",
+                          "ABNLND" = "Abandoned"), 
+                          levels = c("Forest","Other Vegetation","Abandoned", "Grassland", "Cropland") %>% rev)) %>% 
+  filter(OUTPUT_AG != 0)
+
+
+  land_col = beyonce_palette(40)[c(1,6,7,4,5)] %>% 
+  setNames(land_dat$ITEM_AG %>% unique)#%>% 
+             # mutate(ITEM_AG =  factor(ITEM_AG, levels = c("Forest","Other Vegetation","Grassland","Cropland")))
+ land_pal = scale_fill_manual(name = "Land Type",
+                              values = land_col,
+                              breaks = c("Abandoned","Other Vegetation","Forest","Grassland","Cropland"),guide = guide_legend(reverse = FALSE)  )
+  
+  ( land_plots <-  ggplot(land_dat) +
+        geom_col(aes(x= SW_Scen,
+                     y= OUTPUT_AG/1000 , ### Converts 1000-ha to Mha
+                     fill = ITEM_AG), 
+                 position = "stack") +
+        land_pal +
+        # facet_wrap(~REGION_AG,scales = "free" ) +
+        theme_classic() +
+         output_legend +
+        #coord_flip() +
+        #facet_grid(~VAR_ID,  scales = "free") +
+        ylab(paste0(ifelse(i == 1,"Mha","Mha / MJ"))) + # in ",
+                  #  str_replace_all(,"_","/") %>% 
+                  #   str_replace_all("-"," "))) +
+        xlab(NULL) +
+      coord_flip() +
+      theme(#legend.position = c(1.2,0.5)
+        legend.position = "right"
+        )+
+        geom_hline(yintercept = 0) +
+        ggtitle("A-1. Change in Predicted Land Cover") )
+
+ 
+ 
+
+ 
+emis_dat <- globiom_ag %>% #[[i]] <- {if(i == 1) {globiom_ag} else {globiom_ag_rel}} %>% 
+    filter(YEAR ==2050) %>% 
+    filter(VAR_ID == "EMIS") %>% 
+   # filter(!(SW_Scen %in% sw_ign)) %>% 
+    filter(ITEM_AG %in% c("AFFR","LUC","CRP","LSP")) %>% 
+  filter(REGION_AG != "World") %>% 
+     group_by(SW_Scen,ITEM_AG) %>% 
+       summarise(OUTPUT_AG = sum(OUTPUT_AG, na.rm = TRUE)) %>% 
+      pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+      mutate(across(.cols = starts_with("SW_"), .fns = list(
+        delta_Baseline = function(x) {(x-SW_Base)}),
+        .names = "{.fn}.{.col}" )) %>% 
+      dplyr::select(!starts_with("SW_")) %>% 
+      pivot_longer(cols = starts_with("delta_Baseline"), values_to = "delta_Baseline", names_to = "SW_Scen") %>%
+      mutate(SW_Scen = str_remove(SW_Scen, "delta_Baseline.")) %>%
+      rename("OUTPUT_AG"="delta_Baseline") %>% 
+      filter(SW_Scen != "SW_Base") %>% 
+      pub_scen() %>% 
+       # mutate(SW_Scen = factor(SW_Scen, levels = sw_do)) %>% 
+        filter((SW_Scen %in% sw_do)) %>% 
+  # group_by(across(c(-REGION_AG,-REGION,-OUTPUT_AG))) %>% 
+  # summarise(OUTPUT_AG = sum(OUTPUT_AG)) %>% 
+  dplyr::select(ITEM_AG,SW_Scen,OUTPUT_AG) %>% 
+  mutate(ITEM_AG = case_when(ITEM_AG == "AFFR" ~ "Afforestation",
+                             ITEM_AG == "LUC" ~ "Land-Use Change",
+                             ITEM_AG == "LSP" ~ "Livestock Emissions",
+                             ITEM_AG == "CRP" ~ "Crop Emissions",
+                             TRUE ~ ITEM_AG %>% as.character()
+  ) %>% factor(levels = c("Afforestation","Land-Use Change","Livestock Emissions","Crop Emissions"))) %>% ungroup() %>% 
+  dplyr::select(ITEM_AG,SW_Scen, OUTPUT_AG)
+
+emis_col = c(beyonce_palette(40)[6],beyonce_palette(45)[c(4,3,2)]) %>% 
+  setNames(emis_dat$ITEM_AG %>% unique )
+
+emis_pal = scale_fill_manual(name = "Mitigation Source",
+                             values = emis_col, 
+                             breaks = c("Afforestation",
+                                        "Land-Use Change",
+                                        "Livestock Emissions",
+                                        "Crop Emissions"),
+                             guide = guide_legend(reverse = FALSE)  )
+
+ emis_plots <- ggplot(emis_dat) +
+        geom_col(aes(x= SW_Scen,
+                     y= -OUTPUT_AG/1000, #### Converts MT to GT
+                     fill = ITEM_AG), 
+                 position = "stack") +
+       emis_pal +
+        # facet_wrap(~REGION_AG,scales = "free" ) +
+        theme_classic() +
+              output_legend +
+    theme(#legend.position = c(0.8,0.6)
+      legend.position = "right"
+      )+
+
+       # coord_flip() +
+        #facet_grid(~VAR_ID,  scales = "free") +
+        ylab(expression(GtCO[2]/year)) + 
+       # ylab(expression(km^3/p.a.))# in ",
+                  #  str_replace_all(,"_","/") %>% 
+                  #   str_replace_all("-"," "))) +
+        xlab(NULL) +
+          geom_hline(yintercept = 0) +
+   coord_flip() +
+        ggtitle("A-2. Mitigated Emissions from Agriculture") 
+
+watr_dat <- globiom_ag %>% 
+    filter(YEAR ==2050) %>% 
+    filter(VAR_ID == "WATR",
+           REGION_AG != "World") %>% 
+    #filter(VAR_UNIT == j) %>% 
+    group_by(ITEM_AG,SW_Scen) %>% 
+      summarise(OUTPUT_AG = sum(OUTPUT_AG, na.rm = TRUE)) %>% 
+      pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+      mutate(across(.cols = starts_with("SW_"), .fns = list(
+        delta_Baseline = function(x) {(x-SW_Base)}),
+        .names = "{.fn}.{.col}" )) %>% 
+      dplyr::select(!starts_with("SW_")) %>% 
+      pivot_longer(cols = starts_with("delta_Baseline"), values_to = "delta_Baseline", names_to = "SW_Scen") %>%
+      mutate(SW_Scen = str_remove(SW_Scen, "delta_Baseline.") ) %>%
+      rename("OUTPUT_AG"="delta_Baseline") %>% 
+      filter(SW_Scen != "SW_Base") %>% 
+  pub_scen() %>% 
+     filter((SW_Scen %in% sw_do)) %>% 
+   # mutate(SW_Scen = factor(SW_Scen, levels = sw_do)) %>% 
+  filter(!(ITEM_AG %in% c("ALL","CGR","RIC","WHT","CRP","AGR","SRP"))) %>% 
+    mutate(ITEM_AG = case_when(ITEM_AG == "CER" ~ "Cereals",
+                             ITEM_AG == "OCR" ~ "Other Crops",
+                             ITEM_AG == "OSD" ~ "Oilseeds",
+                             ITEM_AG == "SGC" ~ "Sugarcane",
+                             TRUE ~ ITEM_AG
+  ))  
+
+watr <-   ggplot(watr_dat) +
+        geom_col(aes(x= SW_Scen,
+                     y= -OUTPUT_AG ,
+                     fill = ITEM_AG), 
+                 position = "stack") +
+        watr_pal +
+        # facet_wrap(~REGION_AG,scales = "free" ) +
+        theme_classic() +
+                output_legend +
+   theme(#legend.position = c(0.91,0.68)
+     legend.position = "right"
+         )+
+
+        ylab(expression(km^3/year)) + # in ",
+                  #  str_replace_all(,"_","/") %>% 
+                  #   str_replace_all("-"," "))) +
+        xlab(NULL) +
+        geom_hline(yintercept = 0) +
+  coord_flip() +
+        ggtitle("A-3. Water Saved from Irrigation") 
+
+
+#print(
+frtn_dat <- globiom_ag %>% 
+    filter(YEAR ==2050) %>% 
+    filter(VAR_ID == "FRTN",
+           REGION_AG != "World") %>% 
+    #filter(VAR_UNIT == j) %>% 
+    group_by(ITEM_AG,SW_Scen) %>% 
+      summarise(OUTPUT_AG = sum(OUTPUT_AG, na.rm = TRUE)) %>% 
+      pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+      mutate(across(.cols = starts_with("SW_"), .fns = list(
+        delta_Baseline = function(x) {(x-SW_Base)}),
+        .names = "{.fn}.{.col}" )) %>% 
+      dplyr::select(!starts_with("SW_")) %>% 
+      pivot_longer(cols = starts_with("delta_Baseline"), values_to = "delta_Baseline", names_to = "SW_Scen") %>%
+      mutate(SW_Scen = str_remove(SW_Scen, "delta_Baseline.") ) %>%
+      rename("OUTPUT_AG"="delta_Baseline") %>% 
+      filter(SW_Scen != "SW_Base") %>% 
+  pub_scen() %>% 
+     filter((SW_Scen %in% sw_do)) %>% 
+   # mutate(SW_Scen = factor(SW_Scen, levels = sw_do)) %>% 
+  filter(!(ITEM_AG %in% c("ALL",
+                        "CGR","RIC","WHT","CRP","AGR","SRP"))) %>% 
+  mutate(ITEM_AG = case_when(ITEM_AG == "CER" ~ "Cereals",
+                             ITEM_AG == "OCR" ~ "Other Crops",
+                             ITEM_AG == "OSD" ~ "Oilseeds",
+                             ITEM_AG == "SGC" ~ "Sugarcane",
+                             TRUE ~ ITEM_AG
+  )) 
+
+frtn <-   ggplot(frtn_dat) +
+        geom_col(aes(x= SW_Scen,
+                     y= -OUTPUT_AG/1000 , ## converts 1000-tonnes to Mt
+                     fill = ITEM_AG), 
+                 position = "stack") +
+        watr_pal +
+   
+        theme_classic() +
+                 output_legend +
+ theme(#legend.position = c(0.91,0.68)
+   legend.position = "none"
+   )+
+ 
+        ylab(paste0("Mt/year")) + # in ",
+                  #  str_replace_all(,"_","/") %>% 
+                  #   str_replace_all("-"," "))) +
+        xlab(NULL) +
+        geom_hline(yintercept = 0) +
+  coord_flip() +
+        ggtitle("A-4. Nitrogenous Fertilizer Avoided") 
+
+bio_dat <- globiom_ag %>% ####### use 'globiom' or 'bio_comp'
+    filter(YEAR == 2050) %>% 
+    filter(VAR_ID == "ABII",
+           REGION_AG == "World") %>% 
+    #filter(VAR_UNIT == j) %>% 
+    # group_by(ITEM_AG,SW_Scen) %>% 
+    #   summarise(OUTPUT_AG = mean(OUTPUT_AG, na.rm = TRUE)) %>% 
+       pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+      mutate(across(.cols = starts_with("SW_"), .fns = list(
+        delta_Baseline = function(x) {(x-SW_Base) # /SW_Base
+          }),
+        .names = "{.fn}.{.col}" )) %>% 
+      dplyr::select(!starts_with("SW_")) %>% 
+      pivot_longer(cols = starts_with("delta_Baseline"), values_to = "delta_Baseline", names_to = "SW_Scen") %>%
+      mutate(SW_Scen = str_remove(SW_Scen, "delta_Baseline.") ) %>%
+      rename("OUTPUT_AG"="delta_Baseline") %>% 
+      filter(SW_Scen != "SW_Base") %>% 
+#  filter(!(ITEM_AG %in% c("OTHLAND","OTHAGRI","PLANTATION") )) %>% 
+  pub_scen() %>% 
+     filter((SW_Scen %in% sw_do)) 
+   # mutate(SW_Scen = factor(SW_Scen, levels = sw_do#names(scen_col)
+   #                           )) 
+
+  bio_col = beyonce_palette(39)[c(1)] %>% setNames(bio_dat$ITEM_AG %>% unique)
+
+
+#%>% 
+             # mutate(ITEM_AG =  factor(ITEM_AG, levels = c("Forest","Other Vegetation","Grassland","Cropland")))
+ bio_pal = scale_fill_manual(name = "BII Indicator",values = bio_col, guide = guide_legend(reverse = FALSE)  )
+  
+  ( bio_plots <-  ggplot(bio_dat) +
+        geom_col(aes(x= SW_Scen,
+                     y= OUTPUT_AG, 
+                     fill = ITEM_AG), 
+                 position = "stack") +
+        bio_pal +
+        # facet_wrap(~REGION_AG,scales = "free" ) +
+        theme_classic() +
+         output_legend +
+        #coord_flip() +
+        #facet_grid(~VAR_ID,  scales = "free") +
+        ylab(paste0(ifelse(i == 1,"BII (Species Presence)","BII / MJ"))) + # in ",
+                  #  str_replace_all(,"_","/") %>% 
+                  #   str_replace_all("-"," "))) +
+        xlab(NULL) +
+        geom_hline(yintercept = 0) +
+      theme(legend.position = "none") +
+      coord_flip() +
+        ggtitle("A-5. Biodiversity Conserved") )
+
+
+
+(need_fig <- sw_supply %>% filter(Region == "WORLD") %>% group_by(SW_Scen, `Assumption Level`) %>% summarise(Mha = mean(Hectares)/1e6) %>% pivot_wider(names_from = `Assumption Level`, values_from = Mha) %>% ungroup() %>% pub_scen %>% 
+  #mutate(SW_Scen = factor(SW_Scen, levels = sw_do)) %>% 
+  filter(!is.na(SW_Scen)) %>% 
+  ggplot() +
+  geom_linerange(aes(x = SW_Scen, ymin = min, ymax = max, col = SW_Scen), size = 1.6) +
+  geom_point(aes(x = SW_Scen, y = mean, col = SW_Scen), size = 3) +
+  theme_classic() +
+  scale_color_manual(values = scen_pal,
+                     guide = guide_legend(reverse = TRUE),
+                     name = "Scenario") +
+  coord_flip() +
+  ylab("Mha") +
+  xlab(NULL) +
+  ggtitle("F. Sea-Use Change Required"))# +
+  #scale_y_log10()
+
+layout ='
+#AA#
+#AA#
+BBDD
+BBDD
+GGEE
+GGEE 
+'
+
+sw_do = big
+
+    units_need = c(expression(Mha/Mha),
+                expression(MtCO[2]~e/year/Mha),
+                expression(km^3/year/Mha),
+                expression(Mt/Mha),
+                expression(BII/Mha))
+    
+need_df <- lst(land_dat %>% filter(!(ITEM_AG %in% c("Cropland","Grassland"))), emis_dat, watr_dat,frtn_dat,bio_dat) %>% 
+  lapply(function(x) group_by(x,SW_Scen) %>% summarise(OUTPUT_AG = sum(OUTPUT_AG)) %>%
+           {scen_names <<- .} %>% 
+           dplyr::select(OUTPUT_AG) ) %>% 
+  bind_cols() %>% 
+  mutate(Scenario = scen_names %>% pull(SW_Scen)) %>% 
+  relocate(Scenario) %>% 
+  setNames(c("Scenario",
+             "A. Natural Land (Mha)",
+             "B. Emissions (MtCO2e/year)",
+             "C. Water (km3/year)",
+              "D. Fertilizer-N (MT)",
+             "E. Biodiversity (BII)")) %>%
+  pivot_longer(-Scenario, names_to = "objective") %>% 
+  mutate(value = ifelse(objective %>% str_detect("Natural Land") | objective %>% str_detect("Biodiversity"),value, -1*value) ) %>% 
+  mutate(value = case_when(str_detect(objective,"Water") | 
+                             str_detect(objective, "Emissions") |
+                             str_detect(objective, "Biodiversity") ~ value, # convert to Mha Land, GTco2, and MT fertilizer
+                           TRUE ~ value/1000) ) %>% 
+  left_join(by = c("Scenario" = "SW_Scen"), 
+            sw_supply %>% filter(Region == "WORLD") %>%  group_by(SW_Scen, `Assumption Level`) %>% summarise(Mha = mean(Hectares)/1e6) %>% pivot_wider(names_from = `Assumption Level`, values_from = Mha) %>% ungroup() %>% pub_scen) %>% 
+  mutate(ben_max = value/max,
+         ben_mean = value/mean,
+         ben_min = value/min,
+         Scenario = factor(Scenario, levels = big %>% rev),
+         objective = factor(objective, levels = unique(.$objective),
+                            labels = c(
+               "B-1. Natural Land",
+             "B-2. Emissions",
+             "B-3. Water",
+              "B-4. Fertilizer-N",
+             "B-5. Biodiversity")
+                                          ),
+     
+         ) 
+
+
+need_plots <- list()
+for(i in 1:length(units_need)){
+  obj <- (need_df$objective %>% unique)[i] %>% as.character
+  message(obj)
+  #filter(Scenario != "Aspa-0.5R") %>% 
+need_plots[[i]] <- need_df %>% filter(objective == obj) %>% 
+   ggplot() +
+  geom_linerange(aes(x = Scenario, ymin = ben_min, ymax = ben_max, col = Scenario), size = 1.6) +
+  geom_point(aes(x = Scenario, y = ben_mean, col = Scenario), size = 3) +
+  theme_classic() +
+  xlab(NULL) +
+  # facet_wrap(~objective, scales = "free", ncol = 2,
+  #            labeller = label_value
+  # 
+ ylab(units_need[i]) +
+   scale_color_manual(values = scen_pal,
+                     guide = guide_legend(reverse = TRUE),
+                     name = "Scenario") +
+ #{ if(i == 1){output_legend}else{
+   theme(legend.position = "none",
+         plot.title = element_text(size = 12)) +
+# }} +
+  coord_flip() +
+  ggtitle(obj) +
+ # xlab(NULL) +
+  scale_y_log10() 
+}
+
+
+# ggsave(wrap_plots(A = need_plots[[1]], B = need_plots[[2]], D =  need_plots[[3]], E = need_plots[[4]], 
+#                   G = need_plots[[5]], guides = "collect", design = layout),
+#          file = file.path(figure_folder,"scen_savings.png"), width = 6, height = 6)
+
+quad_fig <- land_plots + need_plots[[1]] +
+  emis_plots + need_plots[[2]] +
+  watr + need_plots[[3]] +
+  frtn + need_plots[[4]] +
+  bio_plots + need_plots[[5]] +
+  plot_layout(ncol = 2, widths = c(0.6,0.4))
+
+
+    
+
+# (quad_fig = wrap_plots(A = land_plots, B = emis_plots, D = watr, E = frtn, #C = need_fig, 
+#                       G = bio_plots, design = layout))
+
+
+ggsave(quad_fig,filename = paste0(figure_folder, "/quad.png"), device = "png", width = 7, height = 9, units = "in")
+ggsave(quad_fig,filename = paste0(figure_folder, "/quad.eps"), device = "eps", width = 7, height = 9, units = "in")
+
+
+  sw_supply %>% group_by(SW_Scen, `Assumption Level`) %>% summarise(Mha = mean(Hectares)/1e6) %>% pivot_wider(names_from = `Assumption Level`, values_from = Mha) %>% ungroup() %>% pub_scen %>% 
+  write.csv(file = file.path(figure_folder, "scen_savings.csv"), row.names = FALSE)
+
+```
+
+
+```{r Supplementarty Price Figure}
+pric_dat <- globiom_ag %>% ####### use 'globiom' or 'bio_comp'
+    # filter(YEAR == 2050) %>% 
+    filter(VAR_ID == "CONS",
+           REGION_AG == "World") %>% 
+    filter(ITEM_AG %in% c("MEAT", "LSP","CRP")) %>% 
+    filter(VAR_UNIT != "1000-T-DM") %>% 
+    # group_by(ITEM_AG,SW_Scen) %>% 
+    #   summarise(OUTPUT_AG = mean(OUTPUT_AG, na.rm = TRUE)) %>% 
+       pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+      mutate(across(.cols = starts_with("SW_"), .fns = list(
+        delta_Baseline = function(x) {(x-SW_Base) # /SW_Base
+          }),
+        .names = "{.fn}.{.col}" )) %>% 
+      dplyr::select(!starts_with("SW_")) %>% 
+      pivot_longer(cols = starts_with("delta_Baseline"), values_to = "delta_Baseline", names_to = "SW_Scen") %>%
+      mutate(SW_Scen = str_remove(SW_Scen, "delta_Baseline.") ) %>%
+      rename("OUTPUT_AG"="delta_Baseline") %>% 
+      filter(SW_Scen != "SW_Base") %>% 
+#  filter(!(ITEM_AG %in% c("OTHLAND","OTHAGRI","PLANTATION") )) %>% 
+  pub_scen() %>% 
+  mutate(SW_Scen = factor(SW_Scen, levels = levels(SW_Scen) %>% rev)) %>% 
+    # filter(SW_Scen != "All") %>% 
+
+     filter((SW_Scen %in% big)) 
+
+
+ pric_col = beyonce_palette(38)[c(3,4,5)] %>% setNames(pric_dat$ITEM_AG %>% unique)
+
+
+#%>% 
+             # mutate(ITEM_AG =  factor(ITEM_AG, levels = c("Forest","Other Vegetation","Grassland","Cropland")))
+pric_pal = scale_color_manual(name = "Price",
+                              values = pric_col, 
+                              guide = guide_legend(reverse = FALSE),
+                              labels = c("Meat","Livestock Products","Crops"))
+  
+  ( pric_plots <-  ggplot(pric_dat) +
+        geom_point(aes(x= YEAR,
+                     y= OUTPUT_AG/1000,  # convert to million tonnes
+                     col = ITEM_AG)) +
+      geom_line(aes(x= YEAR,
+                     y= OUTPUT_AG/1000, 
+                     col = ITEM_AG),
+                size = 1.5) +
+        pric_pal +
+      facet_wrap(~SW_Scen, scales = "free") +
+        # facet_wrap(~REGION_AG,scales = "free" ) +
+        theme_classic() +
+      theme(strip.background = element_blank(),
+            strip.text = element_text(hjust = 0,
+                                      size = 12),
+            axis.text.x = element_text(angle = 45,
+                                   hjust = 1,
+                                   vjust = 1.0),
+            legend.position = c(0.81,0.25)) +
+        # output_legend +
+        #coord_flip() +
+        #facet_grid(~VAR_ID,  scales = "free") +
+        ylab("Consumption (Mt)") + # in ",
+                  #  str_replace_all(,"_","/") %>% 
+                  #   str_replace_all("-"," "))) +
+        xlab(NULL) +
+        geom_hline(yintercept = 0) ) 
+     # theme(legend.position = "none") +
+     # coord_flip() +
+        #ggtitle("Consumption") )
+ggsave(filename = paste0(figure_folder, "/consumption.png"), device = "png", width = 7, height = 6)
+ggsave(filename = paste0(figure_folder, "/consumption.eps"), device = "eps", width = 7, height = 6)
+
+
+```
+
+
+```{r Regional Species Availability}
+reg <- readRDS(here("Inputs/eez_ordered.RDS")) %>% pull(Region) %>% c("WORLD") %>% rev
+sp_reg <- list()
+for (i in reg[-1]){
+  message(i)
+  territory.shp <- eez %>% filter(Region == i) %>% 
+        as("Spatial") %>% vect()
+  ras <- crop(sel, ext(territory.shp)) %>% 
+        mask(territory.shp)
+  sp_reg[[i]] <- names(which(!is.na(minmax(ras))[1,], useNames = TRUE))
+}
+sp_reg %>% lapply(function(x) as_tibble(x)) %>% bind_rows(.id="Region") %>% 
+  pivot_wider(names_from = value) %>% 
+  mutate(across(-Region, .fns = function(x) {ifelse(!is.na(x),"X","")}))
+```
+
+```{r Supp. Species Maps}
+
+ # rm(list=c("max_threshed","constraints","waves_mean","port_dist","shipping","MPAs","depth_200","sel_com","util_rast","country_map","sel"))
+
+```
+
+```{r Supply_Maps, eval = FALSE}
+
+reg_do <- reg[c(1,4,6,10,14,17,18,24
+                )]
+ass_do <- c("min",# "mean",
+            "max")
+
+sw_do <- c("SW_FOOD_10","SW_FEED_10","SW_FUEL_50"#,"SW_ASPA_005_COMB"
+           )
+prio <- list()
+for(region in reg_do){
+
+message(region)
+  
+  ras_world <- (intersect(
+  files_ras[
+sapply(paste0(ass_do,".tif"), grepl, x=files_ras) %>% apply(1,sum) %>% as.logical()
+],
+ files_ras[
+sapply(paste0("WORLD_",sw_do), grepl, x=files_ras) %>% apply(1,sum) %>% as.logical()
+]
+) %>% {ras_names <<- .} %>% 
+  rast())
+ 
+  ras_world %>% setNames(names(ras_world)) 
+  ras_names %>% lapply(function(x) {case_when(str_detect(x,"min") ~ "min",
+                          str_detect(x,"mean") ~ "mean",
+                          str_detect(x,"max") ~ "max")}) %>% 
+    unlist
+    
+
+if(region == "WORLD"){
+  proj = "+proj=robin +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m"
+ras <- (intersect(
+  files_ras[
+sapply(paste0(ass_do,".tif"), grepl, x=files_ras) %>% apply(1,sum) %>% as.logical()
+],
+ files_ras[
+sapply(paste0("WORLD_",sw_do), grepl, x=files_ras) %>% apply(1,sum) %>% as.logical()
+]
+) %>% 
+  rast())[[1]]
+} else {
+  proj = '+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0'
+  ras <- files_ras[str_detect(files_ras,region)] %>%
+    rast() %>%
+    subset(sw_do)[[1]]
+}
+
+
+
+ prio[[region]] <- list()
+for (i in 1:nlyr(ras_world)){
+
+   sw_scen <- sw_do[i]
+    message(sw_scen)
+
+
+ tryCatch(
+        # This is what I want to do...
+        {
+          #tmap_mode(mode = "view")
+prio[[region]][[sw_scen]] <- tm_shape(country_map,
+                                     projection = proj, 
+                                      bbox =  st_bbox(ras)
+                                         ) +
+  tm_fill(col = "grey95") +
+  # tm_grid(ticks = TRUE,
+  #         lines = FALSE,
+  #         labels.show = TRUE,
+  #         labels.format = list(scientific = TRUE),
+  #         labels.inside.frame = TRUE) +
+  tm_shape(ras_world[[i]] %>% app(function(x) as.numeric(x)*0), 
+           projection = proj
+           ,raster.warp = FALSE) +
+  tm_raster(drop.levels = TRUE,
+            palette = beyonce_palette(64)[c(11)]) +
+  tm_layout(legend.show = FALSE)
+tmap_save(prio[[region]][[sw_scen]],
+          here(paste0(figure_folder,"/",sw_scen,"_",region,".png")), height = 16,width = 24,dpi = 450)
+tmap_save(prio[[region]][[sw_scen]],
+          here(paste0(figure_folder,"/",sw_scen,"_",region,".eps")), height = 16,width = 24,dpi = 450)
+  
+  
+  
+ 
+    },
+        # ... but if an error occurs, tell me what happened: 
+        error=function(error_message) {
+            message("No Raster Present")
+            message(error_message)
+            message("\n")
+            return(NA)
+        }
+    )
+}
+}
+
+design <- '
+AAABB
+AAABB
+CCCDD
+CCCDD
+'
+
+wrap_plots(design = design, A = prio$EU_South$SW_FOOD_10, B = prio$JapanReg$SW_FOOD_10, C = prio$USAReg$SW_FOOD_10 +xlim(-125,-60) + ylim(25,45), D = prio$AustraliaReg$SW_FOOD_10)
+prio$EU_South$SW_FOOD_10 / (prio$SouthAfrReg$SW_FOOD_10 + prio$JapanReg$SW_FOOD_10)
+
+
+```
+
+```{r Demand_Met}
+# 
+ #source(here("Inputs/sub_demand_supp.R"))
+# 
+# source(here("Inputs/1_regions.R"))
+# 
+# (demand_met <- sw_supply %>% 
+#    group_by(Region, SW_Scen, `Assumption Level`) %>% 
+#     relocate(Region, SW_Scen, `Assumption Level`, Demand, Supply) %>% 
+#   summarise(Supply = mean(Supply),
+#                    Demand = mean(Demand)) %>% 
+#    mutate(Demand_Met = Supply >= Demand,
+#      Demand_Met = ifelse(Demand ==0 ,"No Demand",Demand_Met %>% str_to_title)) %>%
+#    left_join(by = c("Region","Assumption Level"),
+#              
+#              sw_supply %>% 
+#     group_by(Region, SW_Scen, `Assumption Level`) %>% 
+#     summarise(Supply = mean(Supply),
+#               Demand = mean(Demand)) %>% 
+#     mutate(Demand_Met = Supply >= Demand) %>% group_by(Region, `Assumption Level`) %>% filter(SW_Scen %in% c("SW_FOOD_10","SW_FEED_10","SW_FUEL_50")) %>% summarise(ALL = sum(Demand_Met)) 
+#     
+#     ) %>% 
+#    mutate(Demand_Met = ifelse(SW_Scen == "SW_ALL_HIGH" & ALL < 3,  "False",Demand_Met )) %>% 
+#   mutate(Demand_Met = factor(Demand_Met, levels = c("True","False","No Demand") %>% rev)) %>% 
+#   pub_scen() %>% 
+#     pub_region     %>% 
+#  # filter(SW_Scen %in% sw_do) %>% 
+#    mutate(
+#          SW_Scen = factor(SW_Scen,levels =  big %>% rev),#levels = sw_do) ,
+#          `Assumption Level` = factor(`Assumption Level` %>% str_to_title, levels = c("Min","Mean","Max"))) %>% 
+#     {stack_dat <<- .} %>% 
+#     group_by(`Assumption Level`,SW_Scen) %>% 
+#     summarise(Prop_Demand_Met = sum(Demand_Met == "True")) %>% 
+#     pivot_wider(names_from = `Assumption Level`, values_from = Prop_Demand_Met) %>% 
+#     mutate(remainder = 37 - Mean) %>% 
+#   ggplot() + 
+# 
+#     geom_col(data = stack_dat %>% filter(`Assumption Level` == "Mean") %>% group_by(SW_Scen, Demand_Met) %>% summarise(n = n()),
+#              aes(x = SW_Scen, y = n, fill = Demand_Met), position = "stack") +
+#         # geom_col(#data = filter(., 'Assumption Level' == "Mean"),
+#         #      aes(x = SW_Scen, y = Mean), fill = beyonce_palette(64)[c(10)] ) +
+#     geom_segment(aes(x = SW_Scen, xend = SW_Scen, y = Min, yend = Max),width = 0.9, size= 25,alpha = 0.5,col = "grey75") +
+#       
+#   # geom_tile(aes(x = Region,y = SW_Scen, fill = Demand_Met#,color = to_color
+#   #               ), width = 0.9,height = 0.9, size = .5) +
+#   #  geom_vline(xintercept = 37.5, linetype = "dashed")+
+#   # geom_hline(yintercept = c(1,2)+0.5, linetype = "dashed" ) +
+#   #   coord_flip() +
+#    theme_classic() +
+#   # facet_wrap(~`Assumption Level`) +
+#   theme(#axis.text.x = element_text(angle = 45,
+#                           #         hjust = 1.0),
+#      axis.text.y = element_blank(),
+#         #axis.text.y = element_text(size = 8),
+#      legend.position = "right",#c(0.9, 0.8),
+#               legend.key.size = unit(0.5, 'cm'), #change legend key size
+#               #legend.key.height = unit(1, 'cm'), #change legend key height
+#               #legend.key.width = unit(1, 'cm'), #change legend key width
+#               legend.title = element_text(size=8), #change legend title font size
+#               legend.text = element_text(size=7)
+#      ) +
+#   xlab(NULL) + ylab("Number of Regions") +
+#     coord_flip() +
+#     scale_y_continuous(expand = c(0.01,0)) +
+#     ggtitle("B") +
+#   # scale_alpha_discrete(range = c(1,0))+
+#   scale_fill_manual(values = c(beyonce_palette(33)[c(2)],
+#                       beyonce_palette(33)[c(6)],
+#                       "grey25") %>% rev,#beyonce_palette(64)[c(6)],
+#                       #midpoint = 0,
+#                     #  na.value = "white",
+#                     guide = guide_legend(reverse = TRUE),
+#                     name = str_wrap("Demand Met", width = 10),
+#                    labels = c("Sufficient Supply",
+#                               "Insufficient Supply",
+#                               "No Market") %>% rev ) +
+#   #scale_color_manual(values = c("white","red") ) +
+#   guides(#fill = FALSE,
+#          colour = FALSE) ) 
+#    ggsave(filename =  paste0(figure_folder, "/SUB_DEMAND.png"), device = "png",  width = 5, height = 5, dpi = 300)
+ 
+```
+
+
+
+
+
+```{r Figure in Supplement: Plot Occurrences} 
+
+occ_map <- tm_shape(wrld, 
+         projection = "+proj=robin +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m" ) +
+  tm_fill("grey85") +
+  tm_shape(occurrence_all %>% filter(species %in% sp_avail) %>%  
+  st_as_sf(coords = c("x","y"), #data = .,
+                               crs = "+proj=longlat +datum=WGS84 +no_defs"),
+           projection = "+proj=robin +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m" )+
+  tm_dots(
+    palette = beyonce_palette(8)[4],
+          size = 0.01) +
+  tm_layout(frame = FALSE)
+tmap_save(occ_map, file.path(figure_folder,"occ_map.png"), width = 7)
+tmap_save(occ_map, file.path(figure_folder,"occ_map.eps"), width = 7)
+
+```
+
+
+
+```{r LAND - Regional Maps of GLOBIOM Output}
+ reg_pal = c("black",beyonce_palette(64)[10],beyonce_palette(32)[2])
+relative = FALSE
+df_list <- list()
+item_ag <- rbind(c("FOREST", "NATLND"),c("CRPLND","CRPLND"))
+
+maps <- list()
+for (i in 1:nrow(item_ag)){
+sw_do <- "Food-10"
+print(
+maps[[i]] <- country_map %>% 
+  dplyr::select(Region, geometry) %>% 
+  left_join(
+            globiom %>% 
+    filter(YEAR ==2050) %>% 
+    filter(VAR_ID == "LAND",
+           REGION_AG != "World") %>% 
+         #filter(VAR_UNIT == j) %>% 
+    group_by(REGION_AG,ITEM_AG,SW_Scen) %>% 
+      summarise(OUTPUT_AG = sum(OUTPUT_AG, na.rm = TRUE)) %>% 
+      pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+      mutate(across(.cols = starts_with("SW_"), .fns = list(
+        delta_Baseline = function(x) {(x-SW_Base)/(SW_Base^(relative))}),
+        .names = "{.fn}.{.col}" )) %>% 
+      dplyr::select(!starts_with("SW_")) %>% 
+      pivot_longer(cols = starts_with("delta_Baseline"), values_to = "delta_Baseline", names_to = "SW_Scen") %>%
+      mutate(SW_Scen = str_remove(SW_Scen, "delta_Baseline.") ) %>%
+      rename("OUTPUT_AG"="delta_Baseline") %>% 
+      filter(SW_Scen != "SW_Base") %>% 
+  filter(!(ITEM_AG %in% c("OTHLAND","OTHAGRI","PLANTATION") )) %>% 
+  pub_scen() %>% 
+     filter((SW_Scen %in% sw_do)) %>% 
+   mutate(SW_Scen = factor(SW_Scen, levels = names(scen_col))) %>% 
+ # mutate(ITEM_AG = ifelse(ITEM_AG == "OTHNATVEG","Other Vegetation",ITEM_AG)) %>% 
+ # mutate(ITEM_AG = str_to_title(ITEM_AG) %>% factor(levels = c("Forest","Other Vegetation","Grassland","Cropland"))) %>% 
+    filter(ITEM_AG %in% item_ag[i,]) %>% 
+    group_by(REGION_AG,SW_Scen) %>% 
+    summarise(OUTPUT_AG = sum(OUTPUT_AG, na.rm=TRUE)),
+  by = c("Region" = "REGION_AG")
+  ) %>% 
+    dplyr::select(Region, SW_Scen,OUTPUT_AG,geometry) %>% 
+  {df_list[[i]] <<- .} %>% 
+  ggplot() +
+   # geom_sf() +
+    geom_sf(size = .1,aes(color =ifelse(relative == TRUE,100,1)*OUTPUT_AG/1000, fill = ifelse(relative == TRUE,100,1)*OUTPUT_AG/1000)) +
+      # geom_polygon(aes(group = as.symbol(sw_scen)), colour = "black")+
+    coord_sf() +
+    scale_fill_gradient2(limits = if(relative){c(-40,40)}else{c(-20,20)}, 
+                            mid = beyonce_palette(67)[7],
+                        na.value = "grey95", name=ifelse(relative,"Percentage Change from Baseline",ifelse(i==1,"Land Spared (Mha)","Crop Lands (Mha)")),midpoint = 0,low = reg_pal[length(reg_pal)], high = reg_pal[2]) +
+  scale_color_gradient2(limits = if(relative){c(-40,40)}else{c(-20,20)},
+                           mid = beyonce_palette(67)[7],
+                        na.value = "grey95", name=ifelse(relative,"Percentage Change from Baseline","Change from Baseline in (Mha)" %>% str_wrap(width = 5)),
+                        midpoint = 0,low = reg_pal[length(reg_pal)], high = reg_pal[2]) +
+  theme_void()+
+   theme(legend.position = "right",
+              legend.key.size = unit(0.3, 'cm'), #change legend key size
+              #legend.key.height = unit(1, 'cm'), #change legend key height
+              #legend.key.width = unit(1, 'cm'), #change legend key width
+              legend.title = element_text(size=10), #change legend title font size
+              legend.text = element_text(size=8)) +
+    annotate("text", x=-170, y=83, label= ifelse(i ==1,"A","B"), size = 6) +
+   # lims(fill = c()) +
+    guides(colour = FALSE)
+  #  ggtitle(paste0("Food-10: ",ifelse(i == 1,"Area of Natural Lands Spared by 2050","Area of Crop Land Reduced by 2050"))) +
+    
+)
+
+}
+
+ggsave(maps[[1]]+maps[[2]]+ #prio + 
+         plot_layout(ncol = 1, guides = "auto"),filename = paste0(figure_folder, "/LAND_Regional.png"), device = "png", width = 6, height = 5)
+ggsave(maps[[1]]+maps[[2]]+ #prio + 
+         plot_layout(ncol = 1, guides = "auto"),filename = paste0(figure_folder, "/LAND_Regional.eps"), device = "eps", width = 6, height = 5)
+```
+
+```{r Biodiversity Map}
+ bio_pal = c(beyonce_palette(64)[10],"grey65",beyonce_palette(32)[2])
+relative = TRUE ## if TRUE, values are scaled by 100 to make percentages
+
+bio_map_dat <- list()
+bio_map <- list()
+for(sw_do in big) {
+#sw_do <- "All-High"
+#print(
+bio_map_dat[[sw_do]] <- country_map %>% 
+  dplyr::select(Region, geometry) %>% 
+  left_join(
+            globiom %>% 
+    filter(YEAR ==2050) %>% 
+    filter(VAR_ID == "ABII",
+           REGION_AG != "World") %>% 
+         #filter(VAR_UNIT == j) %>% 
+    # group_by(REGION_AG,ITEM_AG,SW_Scen) %>% 
+    #   summarise(OUTPUT_AG = sum(OUTPUT_AG, na.rm = TRUE)) %>% 
+       pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+      mutate(across(.cols = starts_with("SW_"), .fns = list(
+        delta_Baseline = function(x) {(100^(relative))*(x-SW_Base)/(SW_Base^(relative))}),
+        .names = "{.fn}.{.col}" )) %>% 
+      dplyr::select(!starts_with("SW_")) %>% 
+      pivot_longer(cols = starts_with("delta_Baseline"), values_to = "delta_Baseline", names_to = "SW_Scen") %>%
+      mutate(SW_Scen = str_remove(SW_Scen, "delta_Baseline.") ) %>%
+      rename("OUTPUT_AG"="delta_Baseline") %>% 
+      filter(SW_Scen != "SW_Base") %>% 
+ # filter(!(ITEM_AG %in% c("OTHLAND","OTHAGRI","PLANTATION") )) %>% 
+  pub_scen() %>% 
+     filter((SW_Scen %in% sw_do)) %>% 
+   mutate(SW_Scen = factor(SW_Scen, levels = names(scen_col))) %>% 
+ # mutate(ITEM_AG = ifelse(ITEM_AG == "OTHNATVEG","Other Vegetation",ITEM_AG)) %>% 
+ # mutate(ITEM_AG = str_to_title(ITEM_AG) %>% factor(levels = c("Forest","Other Vegetation","Grassland","Cropland"))) %>% 
+    #filter(ITEM_AG %in% item_ag[i,]) %>% 
+    group_by(REGION_AG,SW_Scen) %>% 
+    summarise(OUTPUT_AG = sum(OUTPUT_AG, na.rm=TRUE)),
+  by = c("Region" = "REGION_AG")
+  ) %>% 
+    dplyr::select(Region, SW_Scen,OUTPUT_AG,geometry) %>% 
+  filter(SW_Scen == sw_do)
+ # {df_list[[i]] <<- .} 
+  
+bio_map[[sw_do]] <- tm_shape(wrld,
+                # bbox = euro_ext,
+                 # raster.downsample = FALSE,
+                 projection = "+proj=robin +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m" ) +
+  tm_fill("grey85") +
+  (tm_shape(bio_map_dat[[sw_do]],
+           #bbox = euro_ext,
+           projection = "+proj=robin +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m" ,raster.warp = FALSE)+
+  tm_fill("OUTPUT_AG",
+          midpoint = 0,
+          title = "Percent Change in BII \nfrom Baseline",
+          colorNA = "grey75",
+          style = "cont",
+         
+          #breaks = 3,
+          palette = bio_pal %>% rev ) +
+  tm_layout(#legend.show = FALSE,
+             main.title = sw_do,
+              frame = FALSE
+            # main.title.position = "left"
+  ) )
+}
+
+tmap_arrange(bio_map[[3]],bio_map[[1]],
+                          bio_map[[4]],
+                          bio_map[[2]],bio_map[[5]],nrow = 3) %>% 
+tmap_save(filename =  paste0(figure_folder, "/bio_maps.png"),height = 14,width = 14, dpi = 300)
+
+tmap_arrange(bio_map[[3]],bio_map[[1]],
+                          bio_map[[4]],
+                          bio_map[[2]],bio_map[[5]],nrow = 3) %>% 
+tmap_save(filename =  paste0(figure_folder, "/bio_maps.eps"),height = 14,width = 14, dpi = 300)
+# 
+# ggsave(bio_map+ #prio + 
+#          plot_layout(ncol = 1, guides = "auto"),filename = paste0(figure_folder, "/ABII_Regional.png"), device = "png", width = 12, height = 10)
+```
+
+```{r EMIS - Regional Maps of GLOBIOM Output}
+ reg_pal = beyonce_palette(25)
+relative = TRUE
+df_list <- list()
+for (i in 1:length(all)){
+sw_do <- all[i]
+print(
+country_map %>% 
+  dplyr::select(Region, geometry) %>% 
+  left_join(
+            globiom %>% 
+    filter(YEAR ==2050) %>% 
+    filter(VAR_ID == "EMIS") %>% 
+      filter(ITEM_AG == "TOT") %>% 
+         #filter(VAR_UNIT == j) %>% 
+    group_by(REGION_AG,ITEM_AG,SW_Scen) %>% 
+      summarise(OUTPUT_AG = sum(OUTPUT_AG, na.rm = TRUE)) %>% 
+      pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+      mutate(across(.cols = starts_with("SW_"), .fns = list(
+        delta_Baseline = function(x) {(x-SW_Base)/(SW_Base^(relative))}),
+        .names = "{.fn}.{.col}" )) %>% 
+      dplyr::select(!starts_with("SW_")) %>% 
+      pivot_longer(cols = starts_with("delta_Baseline"), values_to = "delta_Baseline", names_to = "SW_Scen") %>%
+      mutate(SW_Scen = str_remove(SW_Scen, "delta_Baseline.") ) %>%
+      rename("OUTPUT_AG"="delta_Baseline") %>% 
+      filter(SW_Scen != "SW_Base") %>% 
+  pub_scen() %>% 
+     filter((SW_Scen %in% sw_do)) %>% 
+   mutate(SW_Scen = factor(SW_Scen, levels = names(scen_col)))  
+ # mutate(ITEM_AG = ifelse(ITEM_AG == "OTHNATVEG","Other Vegetation",ITEM_AG)) %>% 
+ # mutate(ITEM_AG = str_to_title(ITEM_AG) %>% factor(levels = c("Forest","Other Vegetation","Grassland","Cropland"))) %>% 
+  ,by = c("Region" = "REGION_AG")
+  ) %>% 
+    select(Region, SW_Scen,OUTPUT_AG,geometry) %>% 
+  {df_list[[i]] <<- .} %>% 
+  ggplot() +
+   # geom_sf() +
+    geom_sf(size = .1,aes(color =ifelse(relative == TRUE,100,1)*OUTPUT_AG, fill = ifelse(relative == TRUE,100,1)*OUTPUT_AG)) +
+      # geom_polygon(aes(group = as.symbol(sw_scen)), colour = "black")+
+    coord_sf() +
+    scale_fill_gradient2(limits = if(relative){c(-60,10)}else{c(-5000,20000)},mid = "grey95", name=ifelse(relative,"Percentage Change from Baseline","Change from Baseline in in MtCO2eq"),midpoint = 0,high = reg_pal[length(reg_pal)], low = reg_pal[2]) +
+  scale_color_gradient2(limits = if(relative){c(-60,10)}else{c(-5000,20000)},mid = "grey95", name=NULL,midpoint = 0,high = reg_pal[length(reg_pal)], low = reg_pal[2]) +
+   # lims(fill = c()) +
+    guides(color=FALSE)+
+    ggtitle(paste0(all[i],": Effect on Annual Emissions in 2050")) +
+    theme_classic()
+)
+ggsave(paste0(figure_folder, "EMIS_Regional_",all[i],".png"), device = "png", width = 8, height = 3)
+ggsave(paste0(figure_folder, "EMIS_Regional_",all[i],".eps"), device = "eps", width = 8, height = 3)
+}
+```
+
+```{r Water Use - Overview}
+
+```
+
+```{r Join frtn and watr}
+
+ggsave(watr[[1]]+frtn[[1]]+plot_layout(ncol = 1, guides = "auto"),filename = paste0(figure_folder, "WATR_FRTN_basic.png"), device = "png", width = 6, height = 8)
+
+# ggsave(land_plots[[3]]+feed_plots[[3]]+plot_layout(ncol = 1, guides = "auto"),filename = paste0(figure_folder, "feed_penalty.png"), device = "png", width = 6, height = 8)
+
+
+```
+
+
+# ```{r Land - Feed Penalty}
+# for (i in 1:length(sets[c(1,3,4)])){
+# sw_do <- sets[[i]]
+# print(
+# globiom_ag %>% 
+#     filter(YEAR ==2050) %>% 
+#     filter(VAR_ID == "LAND") %>% 
+#     #filter(VAR_UNIT == j) %>% 
+#     group_by(ITEM_AG,SW_Scen) %>% 
+#       summarise(OUTPUT_AG = sum(OUTPUT_AG, na.rm = TRUE)) %>% 
+#       pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+#       mutate(across(.cols = starts_with("SW_"), .fns = list(
+#         delta_Baseline = function(x) {(x-SW_Base)}),
+#         .names = "{.fn}.{.col}" )) %>% 
+#       dplyr::select(!starts_with("SW_")) %>% 
+#       pivot_longer(cols = starts_with("delta_Baseline"), values_to = "delta_Baseline", names_to = "SW_Scen") %>%
+#       mutate(SW_Scen = str_remove(SW_Scen, "delta_Baseline.")) %>%
+#       rename("OUTPUT_AG"="delta_Baseline") %>% 
+#       filter(SW_Scen != "SW_Base") %>% 
+#   filter(!(ITEM_AG %in% c("OTHLAND","OTHAGRI","PLANTATION") )) %>% 
+#   filter((SW_Scen %in% sw_do)) %>% 
+#        mutate(SW_Scen = factor(SW_Scen, levels = rev(names(scen_col)))) %>% 
+#   ggplot() +
+#         geom_col(aes(x= ITEM_AG,
+#                      y= OUTPUT_AG,
+#                      fill = SW_Scen), 
+#                  position = "dodge") +
+#        scen_pal +
+#         # facet_wrap(~REGION_AG,scales = "free" ) +
+#         theme_classic() +
+#         coord_flip() +
+#         #facet_grid(~VAR_ID,  scales = "free") +
+#         ylab(paste0("Change from BASELINE")) + # in ",
+#                   #  str_replace_all(,"_","/") %>% 
+#                   #   str_replace_all("-"," "))) +
+#         xlab(NULL) +
+#         ggtitle(paste0(var_id %>% filter(VAR_ID == "LAND") %>% select(VAR_DESC) %>% pull())) 
+# )
+# ggsave(paste0(figure_folder, "LAND_",names(sets)[i],".png"), device = "png", width = 11, height = 7)
+# }
+# ```
+# ```{r Land Use Change - Big Hitters}
+# for (i in 1:length(sets[c(1,3,4)])){
+# sw_do <- sets[[i]]
+# print(
+# globiom_ag %>% 
+#     filter(YEAR ==2050) %>% 
+#     filter(VAR_ID == "LAND") %>% 
+#     #filter(VAR_UNIT == j) %>% 
+#     group_by(ITEM_AG,SW_Scen) %>% 
+#       summarise(OUTPUT_AG = sum(OUTPUT_AG, na.rm = TRUE)) %>% 
+#       pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+#       mutate(across(.cols = starts_with("SW_"), .fns = list(
+#         delta_Baseline = function(x) {(x-SW_Base)}),
+#         .names = "{.fn}.{.col}" )) %>% 
+#       dplyr::select(!starts_with("SW_")) %>% 
+#       pivot_longer(cols = starts_with("delta_Baseline"), values_to = "delta_Baseline", names_to = "SW_Scen") %>%
+#       mutate(SW_Scen = str_remove(SW_Scen, "delta_Baseline.") ) %>%
+#        mutate(SW_Scen = factor(SW_Scen, levels = rev(names(scen_col)))) %>% 
+#       rename("OUTPUT_AG"="delta_Baseline") %>% 
+#       filter(SW_Scen != "SW_Base") %>% 
+#   filter(!(ITEM_AG %in% c("OTHLAND","OTHAGRI","PLANTATION") )) %>% 
+#       filter((SW_Scen %in% sw_do)) %>% 
+# 
+#   ggplot() +
+#         geom_col(aes(x= ITEM_AG,
+#                      y= OUTPUT_AG,
+#                      fill = SW_Scen), 
+#                  position = "dodge") +
+#         scen_pal +
+#         # facet_wrap(~REGION_AG,scales = "free" ) +
+#         theme_classic() +
+#         coord_flip() +
+#         #facet_grid(~VAR_ID,  scales = "free") +
+#         ylab(paste0("Change from BASELINE in Mha")) + # in ",
+#                   #  str_replace_all(,"_","/") %>% 
+#                   #   str_replace_all("-"," "))) +
+#         xlab(NULL) +
+#         ggtitle("Land Cover"#paste0(var_id %>% filter(VAR_ID == "LAND") %>% select(VAR_DESC) %>% pull())
+#           ) 
+# 
+# 
+# ```
+
+
+
+
+```{r}
+comp <- globiom_ag %>% 
+    filter(YEAR ==2050) %>% 
+    filter(VAR_ID == "LAND") %>% 
+    #filter(VAR_UNIT == j) %>% 
+    group_by(ITEM_AG,SW_Scen) %>% 
+      summarise(OUTPUT_AG = sum(OUTPUT_AG, na.rm = TRUE)) %>% 
+      pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+      mutate(across(.cols = starts_with("SW_"), .fns = list(
+        delta_Baseline = function(x) {(x-SW_Base)}),
+        .names = "{.fn}.{.col}" )) %>% 
+      dplyr::select(!starts_with("SW_")) %>% 
+      pivot_longer(cols = starts_with("delta_Baseline"), values_to = "delta_Baseline", names_to = "SW_Scen") %>%
+      mutate(SW_Scen = str_remove(SW_Scen, "delta_Baseline.") ) %>%
+      rename("OUTPUT_AG"="delta_Baseline") %>% 
+      filter(SW_Scen != "SW_Base") %>% 
+  filter(!(ITEM_AG %in% c("OTHLAND","OTHAGRI","PLANTATION") )) %>% 
+   mutate(SW_Scen = factor(SW_Scen, levels = rev(names(scen_col)))) %>% 
+   pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+  mutate(ALL_LOW = SW_FOOD_01+SW_FEED_01+SW_FUEL_10,
+         ALL_HIGH = SW_FOOD_10+SW_FEED_10+SW_FUEL_50,
+         ALL_LOW_ASPA = SW_FOOD_01+SW_FEED_01+SW_FUEL_10 + SW_ASPA_005_COMB,
+         ALL_HIGH_ASPA = SW_FOOD_10+SW_FEED_10+SW_FUEL_50 + SW_ASPA_005_COMB)
+run <- comp %>% dplyr::select(ITEM_AG,(contains("ALL") & starts_with("SW_"))) %>% pivot_longer(-ITEM_AG,names_to = "SW_Scen", values_to = "OUTPUT_AG") %>% mutate(Combine = "GLOBIOM")
+franken <- comp %>% dplyr::select(ITEM_AG,!starts_with("SW_")) %>% pivot_longer(-ITEM_AG,names_to = "SW_Scen", values_to = "OUTPUT_AG") %>% mutate(Combine = "Simple") %>% mutate(SW_Scen = paste0("SW_",SW_Scen))
+bind_rows(run,franken) %>% 
+  ggplot() +
+  geom_col(aes(x = ITEM_AG,y= OUTPUT_AG,fill = Combine),size = 1, position = "dodge") +
+  scale_fill_manual(values = beyonce_palette(72))+
+  facet_wrap(~SW_Scen)+
+  coord_flip()+
+ # theme(axis.text.x = element_text(angle = 45))+
+  theme_classic()
+
+```
+
+
+# ```{r Emissions - Feed Penalty}
+# for (i in 1:length(sets[c(1,3,4)])){
+# sw_do <- sets[[i]]
+# print(
+# globiom_ag %>% 
+#     filter(YEAR ==2050) %>% 
+#     filter(VAR_ID == "EMIS") %>% 
+#       filter(ITEM_AG %in% c("LUC","CRP","LSP","TOT")) %>% 
+#   filter(REGION_AG == "World") %>% 
+#     #filter(VAR_UNIT == j) %>% 
+#     # group_by(SW_Scen,ITEM_AG) %>%
+#     #   summarise(OUTPUT_AG = sum(OUTPUT_AG, na.rm = TRUE)) %>%
+#       pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+#       mutate(across(.cols = starts_with("SW_"), .fns = list(
+#         delta_Baseline = function(x) {(x-SW_Base)}),
+#         .names = "{.fn}.{.col}" )) %>% 
+#       dplyr::select(!starts_with("SW_")) %>% 
+#       pivot_longer(cols = starts_with("delta_Baseline"), values_to = "delta_Baseline", names_to = "SW_Scen") %>%
+#       mutate(SW_Scen = str_remove(SW_Scen, "delta_Baseline.")) %>%
+#       rename("OUTPUT_AG"="delta_Baseline") %>% 
+#       filter((SW_Scen %in% sw_do)) %>% 
+#       
+# 
+#  # filter(!(ITEM_AG %in% c("OTHLAND","OTHAGRI","PLANTATION") )) %>% 
+#   ggplot() +
+#         geom_col(aes(x= ITEM_AG,
+#                      y= OUTPUT_AG,
+#                      fill = SW_Scen), 
+#                  position = "dodge") +
+#         scen_pal +
+#         # facet_wrap(~REGION_AG,scales = "free" ) +
+#         theme_classic() +
+#         coord_flip() +
+#         #facet_grid(~VAR_ID,  scales = "free") +
+#         ylab(paste0("Change from BASELINE")) + # in ",
+#                   #  str_replace_all(,"_","/") %>% 
+#                   #   str_replace_all("-"," "))) +
+#         xlab(NULL) +
+#         ggtitle(paste0(var_id %>% filter(VAR_ID == "EMIS") %>% select(VAR_DESC) %>% pull())) 
+
+#```
+
+
+```{r Emissions}
+# for (i in 1:length(sets[c(1,3,4)])){
+# sw_do <- sets[[i]]
+# print(
+# globiom %>% 
+#     filter(YEAR ==2050) %>% 
+#     filter(VAR_ID == "EMIS") %>% 
+#   filter((ITEM_AG %in% item_ag)) %>% 
+#     #filter(VAR_UNIT == j) %>% 
+#     group_by(SW_Scen) %>% 
+#       summarise(OUTPUT_AG = sum(OUTPUT_AG, na.rm = TRUE)) %>% 
+#       pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+#       mutate(across(.cols = starts_with("SW_"), .fns = list(
+#         delta_Baseline = function(x) {(x-SW_Base)}),
+#         .names = "{.fn}.{.col}" )) %>% 
+#       dplyr::select(!starts_with("SW_")) %>% 
+#       pivot_longer(cols = starts_with("delta_Baseline"), values_to = "delta_Baseline", names_to = "SW_Scen") %>%
+#       mutate(SW_Scen = str_remove(SW_Scen, "delta_Baseline.")) %>%
+#       rename("OUTPUT_AG"="delta_Baseline") %>% 
+#       filter((SW_Scen %in% sw_do)) %>% 
+#        mutate(SW_Scen = factor(SW_Scen, levels = sw_order)) %>% 
+#  # filter(!(ITEM_AG %in% c("OTHLAND","OTHAGRI","PLANTATION") )) %>% 
+#   ggplot() +
+#         geom_col(aes(x= SW_Scen,
+#                      y= OUTPUT_AG,
+#                      fill = SW_Scen), 
+#                  position = "dodge") +
+#         # facet_wrap(~REGION_AG,scales = "free" ) +
+#         theme_classic() +
+#         coord_flip() +
+#         #facet_grid(~VAR_ID,  scales = "free") +
+#         ylab(paste0("Change from BASELINE")) + # in ",
+#                   #  str_replace_all(,"_","/") %>% 
+#                   #   str_replace_all("-"," "))) +
+#         xlab(NULL) +
+#         ggtitle(paste0(var_id %>% filter(VAR_ID == "EMIS") %>% select(VAR_DESC) %>% pull())) 
+
+```
+
+for (i in var_id_key){
+  message(i)
+  p <- list()
+  dat <- globiom %>% 
+    filter(YEAR ==2050) %>% 
+    filter(VAR_ID == i) 
+  for (j in dat$VAR_UNIT %>% unique) {
+    message(j)
+    dat1 <- dat %>% filter(VAR_UNIT == j) %>% 
+     {if(i == "LAND") {group_by(.,ITEM_AG,SW_Scen)} else {group_by(.,SW_Scen)}}%>% 
+      summarise(OUTPUT_AG = ifelse(
+        first(    str_detect(VAR_DESC,"/") )
+        ,mean(OUTPUT_AG, na.rm = TRUE),
+        sum(OUTPUT_AG, na.rm = TRUE)
+      )
+      ) %>% 
+      pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+      mutate(across(.cols = starts_with("SW_"), .fns = list(
+        delta_Baseline = function(x) {(x-SW_Base)/SW_Base}),
+        .names = "{.fn}.{.col}" )) %>% 
+      dplyr::select(!starts_with("SW_")) %>% 
+      pivot_longer(cols = starts_with("delta_Baseline"), values_to = "delta_Baseline", names_to = "SW_Scen") %>%
+      mutate(SW_Scen = str_remove(SW_Scen, "delta_Baseline.")) %>%
+      rename("OUTPUT_AG"="delta_Baseline") %>% 
+      filter(SW_Scen != "SW_Base")
+    
+    
+    # pivot_wider(names_from = SW_Scen, values_from = OUTPUT_AG) %>% 
+    # mutate(across(.cols = starts_with("SW_"), .fns = list(
+    #   DM_Shortfall = function(x) {(x-scenBASE)*DM_CONTENT}),
+    #   .names = "{.fn}.{.col}" )) %>% 
+    #dplyr::select(!starts_with("SW_"))
+    # pivot_longer(cols = starts_with("SW_"),names_to = "SW_Scen", values_to = "OUTPUT_AG") 
+  
+    p[[j]] <-  ggplot(dat1) +
+        geom_col(aes(x= ifelse(i == "LAND",ITEM_AG,SW_Scen),
+                     y= OUTPUT_AG,
+                     fill = SW_Scen), 
+                 position = "dodge") +
+        scale_fill_manual(values = rev(pal),
+                          guide = guide_legend(reverse = TRUE) )+
+        # facet_wrap(~REGION_AG,scales = "free" ) +
+        theme_classic() +
+        coord_flip() +
+        #facet_grid(~VAR_ID,  scales = "free") +
+        ylab(paste0("Change from BASELINE in ",
+                    str_replace_all(j,"_","/") %>% 
+                      str_replace_all("-"," "))) +
+        xlab(NULL) +
+        ggtitle(paste0(var_id %>% filter(VAR_ID == i) %>% select(VAR_DESC) %>% pull())) 
+        }
+    pdf(paste0(globiom_path,"/Figures/",i,"_Global.pdf"))
+    invisible(lapply(p, print))
+    dev.off()
+  }
+
+#}
+
+
+### Plot Time-Series
+figure_path <- "C:/Users/s4493740/Documents/GLOBIOM_TS"
+for (i in rev(var_id_key)){
+  dat <- globiom_delta %>% 
+    filter(VAR_ID == i,
+           YEAR != 2000) %>% 
+    mutate(SW_Scen = ifelse(SW_Scen == "SW_Base","BASELINE",SW_Scen))
+  for (j in (dat$VAR_UNIT %>% unique)) {
+    for (k in (dat$REGION_AG %>% unique)){
+      message(k)
+      message(paste(i,j,sep = ";"))
+      dat1 <- dat %>% 
+        filter(VAR_UNIT == j,
+               REGION_AG ==k) %>% 
+        {if(i == "LAND") group_by(.,SW_Scen,YEAR, ITEM_AG, REGION_AG) else group_by(.,SW_Scen, YEAR)} %>% 
+        # {if(i == "LAND") {group_by(SW_Scen,YEAR,ITEM_AG)} else {group_by(SW_Scen, YEAR)}} %>%
+        filter(SW_Scen %in% c(#"BASELINE"
+          "SW_FEED_HIGH"
+          ,"SW_ALL_HIGH"
+          ,"SW_FOOD_10"
+          ,"SW_ASPA_005_COMB")) %>% 
+        filter(ITEM_AG %in% c("CRPLND",
+                              #"MNGFOR", 
+                              "PRIFOR", 
+                              "GRSLND", 
+                              "NATLND"  
+                              #"PLTFOR"
+        ) ) %>% 
+        summarise(OUTPUT_AG = ifelse(
+          first(    str_detect(VAR_DESC,"/") )
+          ,mean(OUTPUT_AG, na.rm = TRUE),
+          sum(OUTPUT_AG, na.rm = TRUE)
+        )
+        ) 
+      if(nrow(dat1)==0 | sum(dat1$OUTPUT_AG, na.rm = TRUE) == 0) {next}
+      
+      ggplot(dat1) +
+        {if(i=="LAND") {
+          geom_line(aes(x = YEAR,y = OUTPUT_AG, col = ITEM_AG, linetype = SW_Scen), size = 1)
+        } else {
+          geom_line(aes(x = YEAR,y = OUTPUT_AG, linetype = sw_scen), size = 1)
+        }} +
+        ggtitle(var_id %>% filter(VAR_ID == i) %>% select(VAR_DESC) %>% pull()) +
+        scale_color_manual(values = rev(pal)) +
+        theme_classic() + 
+        #facet_wrap(~SW_Scen) +
+        ggsave(filename = paste0(figure_path,"/",i,"_",j,k,"_TS.png"), device = "png", width = 7, height = 7, units = "in")
+      
+    }}}
+
+
+<!-- ```{r FIGURE 3 Ocean Use} -->
+
+<!-- ## Distribution of Space Used by Each Scenario -->
+<!-- ggplot(data = sw_supply) +  -->
+<!--   geom_point(aes(x = SW_Scen, y = Hectares, colour = `Assumption Level`), size = 4) + -->
+<!--   geom_violin(aes(x = SW_Scen, y = Hectares, fill = `Assumption Level`, color = `Assumption Level`), size = 4) + -->
+<!--   theme_classic() +  -->
+<!--   scale_color_manual(values = beyonce_palette(12)) + -->
+<!--   scale_fill_manual(values =  beyonce_palette(12)) + -->
+<!--   ylab("Hectares of Ocean Area") + -->
+<!--   xlab("Scenario") + -->
+<!--   theme(legend.position = c(0.8,0.8)) + -->
+<!--   ggsave(filename =  paste0(figure_folder, "map_global_sea-use.png"),  -->
+<!--        device = "png", width = 6, height = 6, dpi = 450) -->
+
+<!-- ``` -->
+
