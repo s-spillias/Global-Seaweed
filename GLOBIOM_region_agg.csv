@@ -1,0 +1,16 @@
+﻿Regional aggregation,,,,,correspondance to GLOBIOM economic markets
+CAN,Canada,,,, CanadaReg
+USA,United States,,,, USAReg
+BRA,Brazil,,,, BrazilReg
+OSA,Other South America,,,," ArgentinaReg, MexicoReg, RCAM, RSAM"
+FSU,Former Soviet Union,,,," RussiaReg, UkraineReg, Former_USSR"
+EUR,Europe,,,," EU_Baltic, EU_CentralEast, EU_MidWest, EU_North, EU_South, RCEU, ROWE"
+MEN,Middle East and Northern Africa,,,," MiddleEast, NorthernAf, TurkeyReg"
+SSA,Sub-Sahara Africa,,,," CongoBasin, EasternAf, SouthernAf, WesternAf, SouthAfrReg"
+CHN,China,,,, ChinaReg
+IND,India,,,, IndiaReg
+SEA,Southeast Asia,,,," IndonesiaReg, MalaysiaReg, RSEA_OPA, RSEA_PAC, JapanReg, SouthKorea"
+OAS,Other Asia,,,," Pacific_Islands, RSAS"
+ANZ,Oceania,,,," AustraliaReg, NewZealandReg"
+,,,,,
+WLD,World total,,,,
